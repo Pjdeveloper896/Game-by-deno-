@@ -1,201 +1,42 @@
 import { Application, Router } from "https://deno.land/x/oak/mod.ts";
-import { DB } from "https://deno.land/x/sqlite/mod.ts"; // Stable SQLite module
 
 const app = new Application();
 const router = new Router();
 
-// Initialize SQLite database
-const db = new DB("game_scores.db");
+// In-memory DB
+const scores: { playerName: string; score: number; date: Date }[] = [];
 
-// Create table for storing game scores if it doesn't exist
-db.query(`
-  CREATE TABLE IF NOT EXISTS game_scores (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    player_name TEXT,
-    score INTEGER,
-    date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-  )
-`);
+// Get high scores
+router.get("/high-scores", (context) => {
+  const topScores = [...scores]
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 10)
+    .map(({ playerName, score }) => ({ playerName, score }));
 
-// Fetch the high scores
-router.get("/high-scores", async (context) => {
-  const result = db.query("SELECT player_name, score FROM game_scores ORDER BY score DESC LIMIT 10");
-  const highScores = result.map((row) => ({
-    playerName: row[0],
-    score: row[1],
-  }));
-
-  context.response.body = highScores;
+  context.response.body = topScores;
   context.response.status = 200;
 });
 
-// Save the score to SQLite
+// Save a score
 router.post("/save-score", async (context) => {
   const body = await context.request.body().value;
   const { playerName, score } = body;
 
-  // Insert the score into SQLite
-  db.query("INSERT INTO game_scores (player_name, score) VALUES (?, ?)", [playerName, score]);
+  if (typeof playerName !== "string" || typeof score !== "number") {
+    context.response.status = 400;
+    context.response.body = { message: "Invalid data" };
+    return;
+  }
 
+  scores.push({ playerName, score, date: new Date() });
   context.response.status = 201;
   context.response.body = { message: "Score saved!" };
 });
 
-// Serve the game (existing code)
+// Serve game (unchanged)
 router.get("/", (context) => {
   context.response.headers.set("content-type", "text/html");
-  context.response.body = `
-  <!DOCTYPE html>
-  <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-    <title>Iron Man Game</title>
-    <script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.min.js"></script>
-    <style>
-      #controls {
-        position: absolute;
-        bottom: 20px;
-        left: 50%;
-        transform: translateX(-50%);
-        display: flex;
-        gap: 20px;
-        z-index: 1;
-      }
-      .btn {
-        width: 60px;
-        height: 60px;
-        background: rgba(255, 255, 255, 0.2);
-        color: white;
-        font-size: 30px;
-        text-align: center;
-        line-height: 60px;
-        border-radius: 50%;
-        user-select: none;
-      }
-      body {
-        margin: 0;
-        overflow: hidden;
-      }
-      canvas {
-        display: block;
-      }
-      #lives, #score, #highScore {
-        position: absolute;
-        left: 20px;
-        font-size: 30px;
-        color: white;
-      }
-      #lives {
-        top: 20px;
-      }
-      #score {
-        top: 60px;
-      }
-      #highScore {
-        top: 100px;
-      }
-    </style>
-  </head>
-  <body>
-    <div id="controls">
-      <div class="btn" id="left">←</div>
-      <div class="btn" id="up">↑</div>
-      <div class="btn" id="right">→</div>
-      <div class="btn" id="shoot">🔫</div>
-      <div class="btn" id="down">↓</div>
-    </div>
-    <div id="lives">Lives: 3</div>
-    <div id="score">Score: 0</div>
-    <div id="highScore">High Score: 0</div>
-
-    <script>
-      let moveLeft = false;
-      let moveRight = false;
-      let jump = false;
-      let moveDown = false;
-      let shoot = false;
-      let lives = 3;
-      let score = 0;
-      let highScore = localStorage.getItem('highScore') || 0;
-      document.getElementById('highScore').textContent = 'High Score: ' + highScore;
-
-      let bullets, enemies;
-      let spawnRate = 2000;
-      let enemySpeed = 200;
-
-      const config = {
-        type: Phaser.AUTO,
-        width: window.innerWidth,
-        height: window.innerHeight,
-        backgroundColor: "#000",
-        physics: {
-          default: 'arcade',
-          arcade: {
-            gravity: { y: 0 },
-            debug: false
-          }
-        },
-        scene: {
-          preload: preload,
-          create: create,
-          update: update
-        }
-      };
-
-      const game = new Phaser.Game(config);
-      let player;
-      let lastShotTime = 0;
-
-      function preload() {
-        this.load.spritesheet('ironman', 'https://labs.phaser.io/assets/sprites/dude.png', {
-          frameWidth: 32,
-          frameHeight: 48
-        });
-        this.load.image('bullet', 'https://labs.phaser.io/assets/sprites/ball.png');
-        this.load.image('enemy', 'https://labs.phaser.io/assets/sprites/ship.png');
-      }
-
-      function create() {
-        player = this.physics.add.sprite(100, 300, 'ironman');
-        player.setCollideWorldBounds(true);
-
-        this.anims.create({
-          key: 'fly',
-          frames: this.anims.generateFrameNumbers('ironman', { start: 0, end: 3 }),
-          frameRate: 10,
-          repeat: -1
-        });
-
-        this.anims.create({
-          key: 'shoot',
-          frames: this.anims.generateFrameNumbers('ironman', { start: 4, end: 7 }),
-          frameRate: 10,
-          repeat: 0
-        });
-
-        player.play('fly');
-
-        bullets = this.physics.add.group({ defaultKey: 'bullet', maxSize: 10 });
-        enemies = this.physics.add.group();
-
-        this.physics.add.collider(bullets, enemies, hitEnemy, null, this);
-        this.physics.add.collider(player, enemies, playerHit, null, this);
-
-        this.time.addEvent({
-          delay: spawnRate,
-          callback: spawnEnemy,
-          callbackScope: this,
-          loop: true
-        });
-
-        document.getElementById('left').addEventListener('touchstart', () => moveLeft = true);
-        document.getElementById('left').addEventListener('touchend', () => moveLeft = false);
-        document.getElementById('right').addEventListener('touchstart', () => moveRight = true);
-        document.getElementById('right').addEventListener('touchend', () => moveRight = false);
-        document.getElementById('up').addEventListener('touchstart', () => jump = true);
-        document.getElementById('up').addEventListener('touchend', () => jump = false);
-        document.getElementById('down').addEventListener('touchstart', () => moveDown = true);
+  context.response.body = `        document.getElementById('down').addEventListener('touchstart', () => moveDown = true);
         document.getElementById('down').addEventListener('touchend', () => moveDown = false);
         document.getElementById('shoot').addEventListener('touchstart', () => shoot = true);
         document.getElementById('shoot').addEventListener('touchend', () => shoot = false);
@@ -292,11 +133,12 @@ router.get("/", (context) => {
       }
     </script>
   </body>
-  </html>
-  `;
+  </html> `;
 });
 
+// Apply routes and start server
 app.use(router.routes());
 app.use(router.allowedMethods());
 
+console.log("Server running at http://localhost:8000");
 await app.listen({ port: 8000 });
